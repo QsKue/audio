@@ -16,14 +16,19 @@
 
 use std::sync::OnceLock;
 
-use windows::core::GUID;
+use windows::core::{implement, GUID, PCWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::BOOL;
-use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-use windows::Win32::Media::Audio::{
-    eConsole, eRender, DigitalAudioDisplayDevice, IMMDevice, IMMDeviceEnumerator,
-    MMDeviceEnumerator, DEVICE_STATE_ACTIVE, PKEY_AudioEndpoint_FormFactor,
+use windows::Win32::Media::Audio::Endpoints::{
+    IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
 };
+use windows::Win32::Media::Audio::{
+    eConsole, eRender, DigitalAudioDisplayDevice, EDataFlow, ERole, IMMDevice, IMMDeviceEnumerator,
+    IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator,
+    AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE, DEVICE_STATE_ACTIVE,
+    PKEY_AudioEndpoint_FormFactor,
+};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use windows::Win32::System::Com::StructuredStorage::{
     PropVariantToStringAlloc, PropVariantToUInt32,
 };
@@ -147,6 +152,123 @@ impl AudioBackend for WindowsAudio {
             }
             Ok(out)
         }
+    }
+
+    fn subscribe(&self) -> Result<UnboundedReceiver<AudioEvent>> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        unsafe {
+            let enumerator = enumerator()?;
+
+            // Default-device + hotplug notifications (the USB-plug / default-changed signals that
+            // drive the force-default rule).
+            let client: IMMNotificationClient = NotificationClient { tx: tx.clone() }.into();
+            enumerator
+                .RegisterEndpointNotificationCallback(&client)
+                .map_err(os("RegisterEndpointNotificationCallback"))?;
+
+            // Volume/mute notifications on the current default endpoint. If the default later
+            // changes, re-subscribe to track volume on the new one — the kiosk forces the default
+            // back to built-in anyway, so a default change is rare.
+            if let Ok(device) = enumerator.GetDefaultAudioEndpoint(eRender, eConsole) {
+                if let Ok(vol) = device.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) {
+                    let cb: IAudioEndpointVolumeCallback = VolumeCallback { tx }.into();
+                    if vol.RegisterControlChangeNotify(&cb).is_ok() {
+                        std::mem::forget(cb);
+                        std::mem::forget(vol);
+                    }
+                }
+            }
+
+            // Single, process-lifetime subscription: keep the registrations alive (the enumerator
+            // AddRef'd the client) and never unregister.
+            std::mem::forget(client);
+            std::mem::forget(enumerator);
+        }
+        Ok(rx)
+    }
+}
+
+/// Forwards Core Audio device/default notifications onto the [`AudioEvent`] stream.
+#[implement(IMMNotificationClient)]
+struct NotificationClient {
+    tx: UnboundedSender<AudioEvent>,
+}
+
+impl IMMNotificationClient_Impl for NotificationClient_Impl {
+    fn OnDeviceStateChanged(&self, id: &PCWSTR, state: DEVICE_STATE) -> windows::core::Result<()> {
+        if let Some(d) = unsafe { pcwstr_id(id) } {
+            let event = if state == DEVICE_STATE_ACTIVE {
+                AudioEvent::DeviceAdded(d)
+            } else {
+                AudioEvent::DeviceRemoved(d)
+            };
+            let _ = self.tx.send(event);
+        }
+        Ok(())
+    }
+
+    fn OnDeviceAdded(&self, id: &PCWSTR) -> windows::core::Result<()> {
+        if let Some(d) = unsafe { pcwstr_id(id) } {
+            let _ = self.tx.send(AudioEvent::DeviceAdded(d));
+        }
+        Ok(())
+    }
+
+    fn OnDeviceRemoved(&self, id: &PCWSTR) -> windows::core::Result<()> {
+        if let Some(d) = unsafe { pcwstr_id(id) } {
+            let _ = self.tx.send(AudioEvent::DeviceRemoved(d));
+        }
+        Ok(())
+    }
+
+    fn OnDefaultDeviceChanged(
+        &self,
+        flow: EDataFlow,
+        role: ERole,
+        _default_device_id: &PCWSTR,
+    ) -> windows::core::Result<()> {
+        // Only the multimedia/console render default matters to the shell.
+        if flow == eRender && role == eConsole {
+            let _ = self.tx.send(AudioEvent::DefaultChanged);
+        }
+        Ok(())
+    }
+
+    fn OnPropertyValueChanged(
+        &self,
+        _id: &PCWSTR,
+        _key: &windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+/// Forwards default-endpoint volume/mute changes onto the [`AudioEvent`] stream.
+#[implement(IAudioEndpointVolumeCallback)]
+struct VolumeCallback {
+    tx: UnboundedSender<AudioEvent>,
+}
+
+impl IAudioEndpointVolumeCallback_Impl for VolumeCallback_Impl {
+    fn OnNotify(&self, notify: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> windows::core::Result<()> {
+        if !notify.is_null() {
+            let data = unsafe { &*notify };
+            let _ = self.tx.send(AudioEvent::VolumeChanged {
+                level: data.fMasterVolume,
+                muted: data.bMuted.as_bool(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Parse a notification's device-id string into a [`DeviceId`].
+unsafe fn pcwstr_id(p: &PCWSTR) -> Option<DeviceId> {
+    unsafe {
+        if p.is_null() {
+            return None;
+        }
+        p.to_string().ok().map(DeviceId::from_string)
     }
 }
 

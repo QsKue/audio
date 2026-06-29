@@ -15,5 +15,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let builtin = if d.bus.is_builtin() { " [BUILT-IN]" } else { "" };
         println!("  {:?}{}{} — {}", d.bus, default, builtin, d.name);
     }
+
+    // Prove the event stream fires: subscribe, then nudge the volume and watch for the callback.
+    println!("\nevents (nudging volume; plug/unplug a device to see hotplug)…");
+    let mut events = audio.subscribe()?;
+    audio.set_volume((v.level + 0.02).min(1.0)).await?;
+    audio.set_volume(v.level).await?; // restore
+    for _ in 0..6 {
+        match tokio::time::timeout(std::time::Duration::from_secs(3), events.recv()).await {
+            Ok(Some(ev)) => println!("  {ev:?}"),
+            _ => break,
+        }
+    }
     Ok(())
 }
