@@ -23,11 +23,12 @@ audio.set_muted(true).await?;
 |---|---|
 | Master volume / mute (get + set) | ✅ |
 | Default output device (read + force-set via `IPolicyConfig`) | ✅ |
-| Output device enumeration (with USB / Bluetooth / display bus) | ✅ |
+| Output device enumeration (id + name + is_default) | ✅ |
 | Live events — volume/mute, default-changed, hotplug | ✅ |
 
-Device classification asserts only what's reliable — USB / Bluetooth / display — and leaves
-everything else (onboard codecs of any vendor) as `Other`; it does not claim to identify "built-in".
+Endpoints are reported as id + name + default only — no built-in/external classification, which
+can't be inferred reliably across DJ and onboard hardware. The "force the default back" rule is the
+consumer's job, keyed off a remembered preferred-default device id.
 
 Construct one [`Audio`] and bind exactly one platform backend at compile time; the public surface
 is identical on every target.

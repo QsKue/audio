@@ -23,15 +23,12 @@ use windows::Win32::Media::Audio::Endpoints::{
     IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
 };
 use windows::Win32::Media::Audio::{
-    eCommunications, eConsole, eMultimedia, eRender, DigitalAudioDisplayDevice, EDataFlow, ERole,
-    IMMDevice, IMMDeviceEnumerator, IMMNotificationClient, IMMNotificationClient_Impl,
-    MMDeviceEnumerator, AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE, DEVICE_STATE_ACTIVE,
-    PKEY_AudioEndpoint_FormFactor,
+    eCommunications, eConsole, eMultimedia, eRender, EDataFlow, ERole, IMMDevice,
+    IMMDeviceEnumerator, IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator,
+    AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE, DEVICE_STATE_ACTIVE,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use windows::Win32::System::Com::StructuredStorage::{
-    PropVariantToStringAlloc, PropVariantToUInt32,
-};
+use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoIncrementMTAUsage, CoTaskMemFree, CLSCTX_ALL, STGM_READ,
 };
@@ -39,13 +36,6 @@ use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, PROPERTYKEY};
 
 use crate::interface::AudioBackend;
 use crate::types::*;
-
-/// `DEVPKEY_Device_EnumeratorName` as a `PROPERTYKEY` (same fmtid as the friendly name, pid 24): the
-/// bus the device sits on — "HDAUDIO", "USB", "BTHENUM", … — our built-in-vs-external signal.
-const PKEY_DEVICE_ENUMERATOR_NAME: PROPERTYKEY = PROPERTYKEY {
-    fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
-    pid: 24,
-};
 
 pub(crate) struct WindowsAudio;
 
@@ -138,17 +128,8 @@ impl AudioBackend for WindowsAudio {
 
                 let name = prop_string(&store, &PKEY_Device_FriendlyName)
                     .unwrap_or_else(|| id.as_str().to_string());
-                let enumerator_name =
-                    prop_string(&store, &PKEY_DEVICE_ENUMERATOR_NAME).unwrap_or_default();
-                let form_factor = prop_u32(&store, &PKEY_AudioEndpoint_FormFactor).unwrap_or(0);
-
                 let is_default = default_id.as_ref() == Some(&id);
-                out.push(AudioDevice {
-                    name,
-                    is_default,
-                    bus: classify_bus(&enumerator_name, form_factor),
-                    id,
-                });
+                out.push(AudioDevice { name, is_default, id });
             }
             Ok(out)
         }
@@ -335,27 +316,3 @@ unsafe fn prop_string(store: &IPropertyStore, key: &PROPERTYKEY) -> Option<Strin
     }
 }
 
-/// Read a `u32` endpoint property (e.g. the form factor), or `None` if absent.
-unsafe fn prop_u32(store: &IPropertyStore, key: &PROPERTYKEY) -> Option<u32> {
-    unsafe {
-        let pv = store.GetValue(key).ok()?;
-        PropVariantToUInt32(&pv).ok()
-    }
-}
-
-/// Classify an endpoint by its connection, asserting only what's reliable: USB/Bluetooth from the
-/// device enumerator (bus) name and a display link from the form factor. Everything else — onboard
-/// codecs of any vendor — is `Other` (we don't claim to have identified built-in audio).
-fn classify_bus(enumerator: &str, form_factor: u32) -> DeviceBus {
-    if form_factor == DigitalAudioDisplayDevice.0 as u32 {
-        return DeviceBus::Display;
-    }
-    let e = enumerator.to_ascii_uppercase();
-    if e.starts_with("USB") {
-        DeviceBus::Usb
-    } else if e.starts_with("BTH") {
-        DeviceBus::Bluetooth
-    } else {
-        DeviceBus::Other
-    }
-}

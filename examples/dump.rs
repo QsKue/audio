@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("output devices:");
     for d in audio.output_devices().await? {
         let default = if d.is_default { " (default)" } else { "" };
-        println!("  {:?}{} — {}", d.bus, default, d.name);
+        println!("  {}{}", d.name, default);
     }
 
     // Prove IPolicyConfig works: re-assert the current default (a harmless no-op change).
