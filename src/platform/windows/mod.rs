@@ -16,15 +16,31 @@
 
 use std::sync::OnceLock;
 
+use windows::core::GUID;
+use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::BOOL;
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-use windows::Win32::Media::Audio::{eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoIncrementMTAUsage, CoTaskMemFree, CLSCTX_ALL,
+use windows::Win32::Media::Audio::{
+    eConsole, eRender, DigitalAudioDisplayDevice, IMMDevice, IMMDeviceEnumerator,
+    MMDeviceEnumerator, DEVICE_STATE_ACTIVE, PKEY_AudioEndpoint_FormFactor,
 };
+use windows::Win32::System::Com::StructuredStorage::{
+    PropVariantToStringAlloc, PropVariantToUInt32,
+};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoIncrementMTAUsage, CoTaskMemFree, CLSCTX_ALL, STGM_READ,
+};
+use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, PROPERTYKEY};
 
 use crate::interface::AudioBackend;
 use crate::types::*;
+
+/// `DEVPKEY_Device_EnumeratorName` as a `PROPERTYKEY` (same fmtid as the friendly name, pid 24): the
+/// bus the device sits on — "HDAUDIO", "USB", "BTHENUM", … — our built-in-vs-external signal.
+const PKEY_DEVICE_ENUMERATOR_NAME: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+    pid: 24,
+};
 
 pub(crate) struct WindowsAudio;
 
@@ -93,10 +109,92 @@ impl AudioBackend for WindowsAudio {
                 Ok(d) => d,
                 Err(_) => return Ok(None), // no active default render endpoint
             };
-            let id = device.GetId().map_err(os("GetId"))?;
-            let s = id.to_string().map_err(|e| AudioError::OsApi(format!("GetId.to_string: {e}")))?;
-            CoTaskMemFree(Some(id.0 as *const _));
-            Ok(Some(DeviceId::from_string(s)))
+            Ok(device_id(&device))
         }
+    }
+
+    async fn output_devices(&self) -> Result<Vec<AudioDevice>> {
+        unsafe {
+            let enumerator = enumerator()?;
+            let default_id = enumerator
+                .GetDefaultAudioEndpoint(eRender, eConsole)
+                .ok()
+                .and_then(|d| device_id(&d));
+            let collection = enumerator
+                .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+                .map_err(os("EnumAudioEndpoints"))?;
+            let count = collection.GetCount().map_err(os("GetCount"))?;
+
+            let mut out = Vec::with_capacity(count as usize);
+            for i in 0..count {
+                let Ok(device) = collection.Item(i) else { continue };
+                let Some(id) = device_id(&device) else { continue };
+                let Ok(store) = device.OpenPropertyStore(STGM_READ) else { continue };
+
+                let name = prop_string(&store, &PKEY_Device_FriendlyName)
+                    .unwrap_or_else(|| id.as_str().to_string());
+                let enumerator_name =
+                    prop_string(&store, &PKEY_DEVICE_ENUMERATOR_NAME).unwrap_or_default();
+                let form_factor = prop_u32(&store, &PKEY_AudioEndpoint_FormFactor).unwrap_or(0);
+
+                let is_default = default_id.as_ref() == Some(&id);
+                out.push(AudioDevice {
+                    name,
+                    is_default,
+                    bus: classify_bus(&enumerator_name, form_factor),
+                    id,
+                });
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// Read an endpoint's stable id, freeing the OS-allocated string. `None` on failure.
+unsafe fn device_id(device: &IMMDevice) -> Option<DeviceId> {
+    unsafe {
+        let id = device.GetId().ok()?;
+        let s = id.to_string().ok();
+        CoTaskMemFree(Some(id.0 as *const _));
+        s.map(DeviceId::from_string)
+    }
+}
+
+/// Read a string endpoint property, or `None` if absent/empty. The `PROPVARIANT` owns its memory and
+/// clears itself on drop; only the alloc from `PropVariantToStringAlloc` needs freeing.
+unsafe fn prop_string(store: &IPropertyStore, key: &PROPERTYKEY) -> Option<String> {
+    unsafe {
+        let pv = store.GetValue(key).ok()?;
+        let p = PropVariantToStringAlloc(&pv).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as *const _));
+        s.filter(|s| !s.is_empty())
+    }
+}
+
+/// Read a `u32` endpoint property (e.g. the form factor), or `None` if absent.
+unsafe fn prop_u32(store: &IPropertyStore, key: &PROPERTYKEY) -> Option<u32> {
+    unsafe {
+        let pv = store.GetValue(key).ok()?;
+        PropVariantToUInt32(&pv).ok()
+    }
+}
+
+/// Classify an endpoint as built-in vs external from its enumerator (bus) name and form factor.
+/// The enumerator is the decisive signal — onboard audio is `HDAUDIO`/`INTELAUDIO`, external gear is
+/// `USB`/`BTHENUM` — with the display form factor catching HDMI/DP.
+fn classify_bus(enumerator: &str, form_factor: u32) -> DeviceBus {
+    if form_factor == DigitalAudioDisplayDevice.0 as u32 {
+        return DeviceBus::Display;
+    }
+    let e = enumerator.to_ascii_uppercase();
+    if e.starts_with("USB") {
+        DeviceBus::Usb
+    } else if e.starts_with("BTH") {
+        DeviceBus::Bluetooth
+    } else if e.contains("HDAUDIO") || e.contains("INTELAUDIO") || e.contains("INTELSST") {
+        DeviceBus::Internal
+    } else {
+        DeviceBus::Other
     }
 }

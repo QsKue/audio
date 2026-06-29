@@ -26,14 +26,39 @@ impl fmt::Display for DeviceId {
     }
 }
 
+/// Where an output endpoint physically lives — the built-in-vs-external signal. Drives the
+/// "always keep the laptop's own speakers as the default" rule: when a DJ device is plugged in and
+/// Windows auto-promotes it, the shell reverts the default to the [`DeviceBus::Internal`] endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceBus {
+    /// The machine's onboard audio — laptop speakers / headphone jack (HD Audio bus).
+    Internal,
+    /// A USB audio device — a DJ controller, a USB DAC.
+    Usb,
+    /// A Bluetooth audio device.
+    Bluetooth,
+    /// Audio over a display link — HDMI / DisplayPort (a monitor's speakers).
+    Display,
+    /// Unclassified.
+    Other,
+}
+
+impl DeviceBus {
+    /// True for the machine's built-in audio — the endpoint the kiosk forces back to default.
+    pub fn is_builtin(self) -> bool {
+        matches!(self, DeviceBus::Internal)
+    }
+}
+
 /// A discoverable audio **output** (render) endpoint, for populating a picker. `id` is the stable
 /// handle to persist/select; `name` is the human label; `is_default` marks the system default at
-/// enumeration time.
+/// enumeration time; `bus` says whether it's built-in or external.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioDevice {
     pub id: DeviceId,
     pub name: String,
     pub is_default: bool,
+    pub bus: DeviceBus,
 }
 
 /// Master volume of an endpoint: a scalar `0.0..=1.0` (matching the Windows volume slider, *not* dB)

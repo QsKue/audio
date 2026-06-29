@@ -15,6 +15,10 @@ exclude = ["docs/", "AGENTS.md"]
 # The event channel for live notifications (volume/mute/default/hotplug), mirroring the `wifi` crate.
 tokio = { version = "1", features = ["sync"] }
 
+[dev-dependencies]
+# A runtime for the examples (the facade is async; the crate itself needs no runtime).
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
 # Windows backend — Core Audio (MMDevice + WASAPI endpoint volume) via the official `windows` crate.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58.0", features = [
