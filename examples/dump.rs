@@ -16,6 +16,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  {:?}{}{} — {}", d.bus, default, builtin, d.name);
     }
 
+    // Prove IPolicyConfig works: re-assert the current default (a harmless no-op change).
+    if let Some(def) = audio.default_output().await? {
+        match audio.set_default_output(&def).await {
+            Ok(()) => println!("\nset_default_output(current) -> ok"),
+            Err(e) => println!("\nset_default_output -> ERROR: {e}"),
+        }
+    }
+
     // Prove the event stream fires: subscribe, then nudge the volume and watch for the callback.
     println!("\nevents (nudging volume; plug/unplug a device to see hotplug)…");
     let mut events = audio.subscribe()?;

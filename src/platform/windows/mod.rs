@@ -16,16 +16,16 @@
 
 use std::sync::OnceLock;
 
-use windows::core::{implement, GUID, PCWSTR};
+use windows::core::{implement, interface, GUID, HRESULT, IUnknown, IUnknown_Vtbl, PCWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::BOOL;
 use windows::Win32::Media::Audio::Endpoints::{
     IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
 };
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, DigitalAudioDisplayDevice, EDataFlow, ERole, IMMDevice, IMMDeviceEnumerator,
-    IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator,
-    AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE, DEVICE_STATE_ACTIVE,
+    eCommunications, eConsole, eMultimedia, eRender, DigitalAudioDisplayDevice, EDataFlow, ERole,
+    IMMDevice, IMMDeviceEnumerator, IMMNotificationClient, IMMNotificationClient_Impl,
+    MMDeviceEnumerator, AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE, DEVICE_STATE_ACTIVE,
     PKEY_AudioEndpoint_FormFactor,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -186,6 +186,47 @@ impl AudioBackend for WindowsAudio {
         }
         Ok(rx)
     }
+
+    async fn set_default_output(&self, id: &DeviceId) -> Result<()> {
+        let wide: Vec<u16> = id.as_str().encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            let config: IPolicyConfig =
+                CoCreateInstance(&CLSID_POLICY_CONFIG_CLIENT, None, CLSCTX_ALL)
+                    .map_err(os("CoCreateInstance(PolicyConfig)"))?;
+            // Set all three roles, as the OS settings UI does, so the device is fully the default.
+            for role in [eConsole, eMultimedia, eCommunications] {
+                config
+                    .SetDefaultEndpoint(PCWSTR(wide.as_ptr()), role)
+                    .ok()
+                    .map_err(os("SetDefaultEndpoint"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---- IPolicyConfig — the only way to FORCE the system default endpoint ----------
+// There is no public API to set the default audio device; the OS sound settings drive this private
+// COM interface. windows-rs doesn't ship it, so it's declared by hand. The vtable order has been
+// stable since Windows 7, so the ten entries before `SetDefaultEndpoint` are declared as padding to
+// land it in the correct slot; only `SetDefaultEndpoint` is ever called.
+
+const CLSID_POLICY_CONFIG_CLIENT: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
+
+#[interface("f8679f50-850a-41cf-9c72-430f290290c8")]
+unsafe trait IPolicyConfig: IUnknown {
+    unsafe fn get_mix_format(&self) -> HRESULT;
+    unsafe fn get_device_format(&self) -> HRESULT;
+    unsafe fn reset_device_format(&self) -> HRESULT;
+    unsafe fn set_device_format(&self) -> HRESULT;
+    unsafe fn get_processing_period(&self) -> HRESULT;
+    unsafe fn set_processing_period(&self) -> HRESULT;
+    unsafe fn get_share_mode(&self) -> HRESULT;
+    unsafe fn set_share_mode(&self) -> HRESULT;
+    unsafe fn get_property_value(&self) -> HRESULT;
+    unsafe fn set_property_value(&self) -> HRESULT;
+    /// Slot 11 — the one we call. Roles: eConsole / eMultimedia / eCommunications.
+    unsafe fn SetDefaultEndpoint(&self, device_id: PCWSTR, role: ERole) -> HRESULT;
 }
 
 /// Forwards Core Audio device/default notifications onto the [`AudioEvent`] stream.
