@@ -22,10 +22,12 @@ audio.set_muted(true).await?;
 | Capability | Windows |
 |---|---|
 | Master volume / mute (get + set) | ✅ |
-| Default output device (read) | ✅ |
-| Output device enumeration | ☐ (next) |
-| Force-set default output (`IPolicyConfig`) | ☐ (next) |
-| Live events — volume/mute, default-changed, hotplug | ☐ (next) |
+| Default output device (read + force-set via `IPolicyConfig`) | ✅ |
+| Output device enumeration (with USB / Bluetooth / display bus) | ✅ |
+| Live events — volume/mute, default-changed, hotplug | ✅ |
+
+Device classification asserts only what's reliable — USB / Bluetooth / display — and leaves
+everything else (onboard codecs of any vendor) as `Other`; it does not claim to identify "built-in".
 
 Construct one [`Audio`] and bind exactly one platform backend at compile time; the public surface
 is identical on every target.

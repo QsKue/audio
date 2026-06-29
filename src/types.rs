@@ -26,33 +26,27 @@ impl fmt::Display for DeviceId {
     }
 }
 
-/// Where an output endpoint physically lives — the built-in-vs-external signal. Drives the
-/// "always keep the laptop's own speakers as the default" rule: when a DJ device is plugged in and
-/// Windows auto-promotes it, the shell reverts the default to the [`DeviceBus::Internal`] endpoint.
+/// How an output endpoint connects. Only **positively identifiable** transports get a variant —
+/// USB and Bluetooth (external/removable gear) and a display link. There is deliberately **no
+/// "built-in" variant**: onboard codecs span many vendors and buses and can't be reliably
+/// enumerated, so anything not positively external is [`DeviceBus::Other`] (which is where built-in
+/// audio lands, without claiming we identified it as such). The force-default rule keys off the
+/// *external* signal plus a remembered preferred-default [`DeviceId`], not a guessed "is built-in".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceBus {
-    /// The machine's onboard audio — laptop speakers / headphone jack (HD Audio bus).
-    Internal,
     /// A USB audio device — a DJ controller, a USB DAC.
     Usb,
     /// A Bluetooth audio device.
     Bluetooth,
     /// Audio over a display link — HDMI / DisplayPort (a monitor's speakers).
     Display,
-    /// Unclassified.
+    /// Onboard or otherwise not positively external — the common case for built-in audio.
     Other,
-}
-
-impl DeviceBus {
-    /// True for the machine's built-in audio — the endpoint the kiosk forces back to default.
-    pub fn is_builtin(self) -> bool {
-        matches!(self, DeviceBus::Internal)
-    }
 }
 
 /// A discoverable audio **output** (render) endpoint, for populating a picker. `id` is the stable
 /// handle to persist/select; `name` is the human label; `is_default` marks the system default at
-/// enumeration time; `bus` says whether it's built-in or external.
+/// enumeration time; `bus` says how it connects (USB / Bluetooth / display / other).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioDevice {
     pub id: DeviceId,

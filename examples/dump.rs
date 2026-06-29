@@ -12,8 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("output devices:");
     for d in audio.output_devices().await? {
         let default = if d.is_default { " (default)" } else { "" };
-        let builtin = if d.bus.is_builtin() { " [BUILT-IN]" } else { "" };
-        println!("  {:?}{}{} — {}", d.bus, default, builtin, d.name);
+        println!("  {:?}{} — {}", d.bus, default, d.name);
     }
 
     // Prove IPolicyConfig works: re-assert the current default (a harmless no-op change).

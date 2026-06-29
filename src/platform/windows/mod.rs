@@ -343,9 +343,9 @@ unsafe fn prop_u32(store: &IPropertyStore, key: &PROPERTYKEY) -> Option<u32> {
     }
 }
 
-/// Classify an endpoint as built-in vs external from its enumerator (bus) name and form factor.
-/// The enumerator is the decisive signal — onboard audio is `HDAUDIO`/`INTELAUDIO`, external gear is
-/// `USB`/`BTHENUM` — with the display form factor catching HDMI/DP.
+/// Classify an endpoint by its connection, asserting only what's reliable: USB/Bluetooth from the
+/// device enumerator (bus) name and a display link from the form factor. Everything else — onboard
+/// codecs of any vendor — is `Other` (we don't claim to have identified built-in audio).
 fn classify_bus(enumerator: &str, form_factor: u32) -> DeviceBus {
     if form_factor == DigitalAudioDisplayDevice.0 as u32 {
         return DeviceBus::Display;
@@ -355,8 +355,6 @@ fn classify_bus(enumerator: &str, form_factor: u32) -> DeviceBus {
         DeviceBus::Usb
     } else if e.starts_with("BTH") {
         DeviceBus::Bluetooth
-    } else if e.contains("HDAUDIO") || e.contains("INTELAUDIO") || e.contains("INTELSST") {
-        DeviceBus::Internal
     } else {
         DeviceBus::Other
     }
